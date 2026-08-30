@@ -1,0 +1,553 @@
+{
+  "executive_summary": "ECN-042 adds an adjustable early load warning, hysteresis, overload-event logging, CAN event reporting, and fail-safe behavior for invalid load or boom-angle inputs. The primary changes are expected in firmware, HMI/configuration, storage handling, CAN communications, and verification. Hardware changes to the existing sensors and lift-inhibit relay are explicitly excluded.",
+  "detected_change": "Extend the existing Safe Load Indicator controller with configurable pre-warning, overload data logging/communication, and sensor-invalid fail-safe behavior while preserving unaffected legacy warning/inhibit functions.",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "requirement": "The pre-warning threshold shall be configurable from 80% to 90% of SWL.",
+      "type": "Functional / Configuration",
+      "priority": "High",
+      "evidence": "Requested change A specifies an allowed setting of 80% to 90% of SWL.",
+      "acceptance_criteria": "A user-configurable threshold accepts values within 80\u201390% SWL and rejects or prevents values outside that range.",
+      "ambiguity": "The configuration interface, step size, permissions, and persistence behavior are not stated."
+    },
+    {
+      "id": "REQ-002",
+      "requirement": "The default pre-warning threshold shall be 85% of SWL.",
+      "type": "Functional / Default configuration",
+      "priority": "High",
+      "evidence": "Requested change A states 85% as the default.",
+      "acceptance_criteria": "A controller using default settings has a pre-warning threshold of 85% SWL.",
+      "ambiguity": "It is not stated whether firmware upgrade should reset existing units to this default."
+    },
+    {
+      "id": "REQ-003",
+      "requirement": "After pre-warning activates, it shall remain active until calculated load is at least 5 percentage points below the configured threshold.",
+      "type": "Functional / Hysteresis",
+      "priority": "High",
+      "evidence": "Requested change B defines a 5 percentage-point release hysteresis.",
+      "acceptance_criteria": "For threshold T, warning remains active above T-5 percentage points and clears only when calculated load reaches or falls below the intended release boundary, subject to clarification of exact boundary semantics.",
+      "ambiguity": "The exact inclusive/exclusive comparison at T-5 is not formally stated."
+    },
+    {
+      "id": "REQ-004",
+      "requirement": "Every event at or above 100% SWL shall be logged.",
+      "type": "Logging",
+      "priority": "High",
+      "evidence": "Requested change C requires logging every event in which calculated load reaches or exceeds 100% SWL.",
+      "acceptance_criteria": "An overload event at the defined detection point creates one retained event record; event start/end de-duplication behavior requires clarification.",
+      "ambiguity": "The definition of a distinct event is not stated, so repeated samples during one continuous overload could create duplicate records."
+    },
+    {
+      "id": "REQ-005",
+      "requirement": "Each overload record shall include timestamp, calculated load, boom angle, and operating radius.",
+      "type": "Data / Logging",
+      "priority": "High",
+      "evidence": "Requested change C lists four required record fields.",
+      "acceptance_criteria": "Every stored overload record contains all four fields and each value corresponds to the detected event.",
+      "ambiguity": "Timestamp source/resolution and numeric encoding/resolution are not specified."
+    },
+    {
+      "id": "REQ-006",
+      "requirement": "Internal storage shall retain at least 10,000 overload-event records.",
+      "type": "Capacity / Non-functional",
+      "priority": "High",
+      "evidence": "Requested change D states at least 10,000 records.",
+      "acceptance_criteria": "The device can store and subsequently access at least 10,000 valid overload records without loss caused by nominal operation.",
+      "ambiguity": "Behavior when storage becomes full is explicitly open."
+    },
+    {
+      "id": "REQ-007",
+      "requirement": "The latest overload event shall be transmitted over the existing CAN interface using identifier 0x18FF50E5 within 500 ms of detection.",
+      "type": "Interface / Performance",
+      "priority": "High",
+      "evidence": "Requested change E states the CAN identifier and 500 ms timing.",
+      "acceptance_criteria": "For a detected overload event, a message using CAN ID 0x18FF50E5 is initiated within 500 ms and represents that event.",
+      "ambiguity": "CAN payload mapping, byte order, scaling, retry behavior, and what constitutes transmission completion are not specified."
+    },
+    {
+      "id": "REQ-008",
+      "requirement": "If load input or boom-angle input remains invalid continuously for more than 200 ms, the controller shall show sensor fault and activate the existing lift-inhibit relay.",
+      "type": "Safety-related / Fault handling",
+      "priority": "High",
+      "evidence": "Requested change F defines invalid-input duration and two required responses.",
+      "acceptance_criteria": "A continuously invalid load or angle input crossing the specified duration causes both sensor-fault indication and lift-inhibit activation; recovery behavior requires clarification.",
+      "ambiguity": "Invalidity criteria, exact timing boundary, latching/recovery behavior, and distinction between which sensor failed are not specified."
+    },
+    {
+      "id": "REQ-009",
+      "requirement": "The load sensor, angle sensor, and lift-inhibit relay hardware shall not be changed by this ECN.",
+      "type": "Design constraint",
+      "priority": "Medium",
+      "evidence": "Requested change G explicitly excludes changes to those hardware items.",
+      "acceptance_criteria": "The released implementation uses the existing load sensor, angle sensor, and lift-inhibit relay hardware.",
+      "ambiguity": "Other controller hardware changes are not explicitly prohibited."
+    },
+    {
+      "id": "REQ-010",
+      "requirement": "Existing warning and inhibit behavior not modified by ECN-042 shall continue to work.",
+      "type": "Regression / Compatibility",
+      "priority": "High",
+      "evidence": "Requested change H requires preservation of unaffected existing behavior.",
+      "acceptance_criteria": "Regression testing shows existing warning and inhibit functions outside the stated ECN modifications still behave as in the approved baseline.",
+      "ambiguity": "The authoritative baseline specification and regression set are not provided."
+    }
+  ],
+  "impacts": [
+    {
+      "area": "Firmware",
+      "component": "Load warning state logic",
+      "impact": "Add configurable threshold and release hysteresis without changing the existing 100% inhibit function.",
+      "rationale": "REQ-001 to REQ-003 change warning state behavior.",
+      "severity": "High",
+      "basis": "Explicit"
+    },
+    {
+      "area": "Firmware",
+      "component": "Fault supervision",
+      "impact": "Add continuous invalid-input timing and fail-safe output behavior.",
+      "rationale": "REQ-008 requires time-qualified invalidity detection and two outputs.",
+      "severity": "High",
+      "basis": "Explicit"
+    },
+    {
+      "area": "Firmware",
+      "component": "Event logger / NVM manager",
+      "impact": "Create overload event records, capacity handling, data integrity behavior, and retrieval/retention logic.",
+      "rationale": "REQ-004 to REQ-006 require persistent event records.",
+      "severity": "High",
+      "basis": "Explicit"
+    },
+    {
+      "area": "Communication",
+      "component": "CAN stack / application message layer",
+      "impact": "Add a new event message using CAN ID 0x18FF50E5 and verify latency.",
+      "rationale": "REQ-007 adds a new interface behavior.",
+      "severity": "High",
+      "basis": "Explicit"
+    },
+    {
+      "area": "HMI",
+      "component": "Configuration and fault display",
+      "impact": "Provide a method to configure pre-warning and display sensor fault.",
+      "rationale": "Configuration and sensor-fault indication need a user-facing mechanism, but the exact HMI is not stated.",
+      "severity": "Medium",
+      "basis": "Inferred"
+    },
+    {
+      "area": "Hardware",
+      "component": "Memory/resource capacity",
+      "impact": "Confirm current non-volatile storage endurance/capacity and CPU/RAM margin are sufficient for 10,000 records and added logic.",
+      "rationale": "The source says internal NVM exists but does not prove capacity/endurance/resource margin.",
+      "severity": "Medium",
+      "basis": "Inferred"
+    },
+    {
+      "area": "Verification",
+      "component": "Regression and fault-injection test suite",
+      "impact": "Extend tests for thresholds, hysteresis, overload de-duplication, NVM, CAN timing, invalid sensors, and legacy behavior.",
+      "rationale": "REQ-001 through REQ-010 introduce new behaviors and regression obligations.",
+      "severity": "High",
+      "basis": "Inferred"
+    }
+  ],
+  "risks": [
+    {
+      "id": "RISK-001",
+      "risk": "A continuous overload could generate many duplicate event records.",
+      "cause": "The source says log every event but does not define event start/end or de-duplication.",
+      "impact": "Storage may fill rapidly and event history may be misleading.",
+      "probability": "Medium",
+      "severity": "High",
+      "mitigation": "Define a distinct overload event state model and acceptance tests before implementation.",
+      "linked_requirement_ids": [
+        "REQ-004",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "RISK-002",
+      "risk": "CAN integration may be implemented incompatibly with the receiving node.",
+      "cause": "Payload mapping, scaling, byte order, and retry behavior are missing.",
+      "impact": "The message may be timely but unusable or misinterpreted.",
+      "probability": "High",
+      "severity": "High",
+      "mitigation": "Obtain an agreed interface-control definition and test with the receiver or bus simulation.",
+      "linked_requirement_ids": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "RISK-003",
+      "risk": "Fail-safe behavior may trigger too early, too late, or recover incorrectly.",
+      "cause": "Invalidity definition and exact 200 ms boundary/recovery semantics are unspecified.",
+      "impact": "Unexpected lift inhibition or insufficient fault response.",
+      "probability": "Medium",
+      "severity": "High",
+      "mitigation": "Define signal-validity criteria, timer semantics, and recovery/latching requirements; verify with fault injection.",
+      "linked_requirement_ids": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "RISK-004",
+      "risk": "NVM may not meet record capacity or endurance needs.",
+      "cause": "Record size, write frequency, memory allocation, and endurance margin are not provided.",
+      "impact": "Data loss, premature wear, or inability to meet 10,000-record retention.",
+      "probability": "Medium",
+      "severity": "Medium",
+      "mitigation": "Create a memory/endurance budget and implement integrity strategy suitable for the existing hardware.",
+      "linked_requirement_ids": [
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "RISK-005",
+      "risk": "Existing 90% warning or 100% inhibit behavior could regress when new threshold logic is introduced.",
+      "cause": "Warning state logic is being modified close to existing critical behavior.",
+      "impact": "Previously approved functionality could change unintentionally.",
+      "probability": "Medium",
+      "severity": "High",
+      "mitigation": "Maintain explicit state separation and execute baseline regression tests around threshold boundaries.",
+      "linked_requirement_ids": [
+        "REQ-003",
+        "REQ-010"
+      ]
+    }
+  ],
+  "test_cases": [
+    {
+      "id": "TC-001",
+      "requirement_ids": [
+        "REQ-001",
+        "REQ-002"
+      ],
+      "title": "Configure pre-warning threshold across valid and invalid range",
+      "type": "Boundary / Functional",
+      "priority": "High",
+      "preconditions": "Controller is operational and configuration mechanism is available.",
+      "steps": [
+        "Verify default threshold after applicable default-initialization condition.",
+        "Set threshold to 80% and verify acceptance.",
+        "Set threshold to 90% and verify acceptance.",
+        "Attempt values below 80% and above 90%.",
+        "Restart or power-cycle if persistence is intended once that requirement is clarified."
+      ],
+      "expected_result": "Default is 85%; 80\u201390% values are supported; out-of-range values cannot result in an active configuration."
+    },
+    {
+      "id": "TC-002",
+      "requirement_ids": [
+        "REQ-003"
+      ],
+      "title": "Verify pre-warning activation and hysteresis release",
+      "type": "Boundary",
+      "priority": "High",
+      "preconditions": "Configured threshold T is known.",
+      "steps": [
+        "Increase calculated load from below T to T.",
+        "Verify pre-warning activation according to the agreed boundary.",
+        "Reduce load to just above T-5 percentage points.",
+        "Verify warning remains active.",
+        "Reduce load to the agreed release boundary at or below T-5."
+      ],
+      "expected_result": "Warning activates at the defined threshold and does not chatter; it clears only at the agreed hysteresis release boundary."
+    },
+    {
+      "id": "TC-003",
+      "requirement_ids": [
+        "REQ-004",
+        "REQ-005"
+      ],
+      "title": "Create and validate one overload event record",
+      "type": "Functional / Data integrity",
+      "priority": "High",
+      "preconditions": "Event storage has free capacity and timestamp source is configured.",
+      "steps": [
+        "Drive calculated load from below 100% SWL to 100% or above.",
+        "Read the resulting event record.",
+        "Compare stored load, boom angle, radius, and timestamp against the event inputs."
+      ],
+      "expected_result": "One correctly associated event record is stored with all required fields, subject to final event-definition semantics."
+    },
+    {
+      "id": "TC-004",
+      "requirement_ids": [
+        "REQ-004",
+        "REQ-006"
+      ],
+      "title": "Verify overload event de-duplication and full-storage behavior",
+      "type": "Negative / Capacity",
+      "priority": "High",
+      "preconditions": "Event definition and full-storage policy have been clarified.",
+      "steps": [
+        "Hold load continuously above 100% SWL for a defined interval.",
+        "Observe number of stored events.",
+        "Populate storage to at least 10,000 records.",
+        "Trigger another event at the capacity boundary."
+      ],
+      "expected_result": "Logging follows the agreed event-definition and capacity policy without unintended record storms or silent corruption."
+    },
+    {
+      "id": "TC-005",
+      "requirement_ids": [
+        "REQ-007"
+      ],
+      "title": "Verify CAN overload-event identifier, content, and latency",
+      "type": "Interface / Performance",
+      "priority": "High",
+      "preconditions": "CAN payload specification is available and bus monitoring is connected.",
+      "steps": [
+        "Generate a known overload event.",
+        "Capture the event-detection timestamp.",
+        "Capture CAN traffic.",
+        "Verify identifier 0x18FF50E5.",
+        "Verify payload against the approved mapping.",
+        "Measure event-to-transmission latency."
+      ],
+      "expected_result": "The latest event is represented by the specified CAN message and transmission begins/completes within the agreed interpretation of the 500 ms requirement."
+    },
+    {
+      "id": "TC-006",
+      "requirement_ids": [
+        "REQ-008"
+      ],
+      "title": "Inject invalid load input around 200 ms boundary",
+      "type": "Fault-injection / Boundary",
+      "priority": "High",
+      "preconditions": "A test method exists to force load-input validity state.",
+      "steps": [
+        "Force load input invalid for less than the agreed 200 ms boundary and restore it.",
+        "Observe fault indication and inhibit relay.",
+        "Force load input invalid continuously beyond the agreed boundary.",
+        "Observe fault indication and inhibit relay.",
+        "Restore validity and observe recovery behavior once specified."
+      ],
+      "expected_result": "Responses match the agreed timing boundary; beyond-threshold invalidity produces both sensor-fault indication and lift-inhibit activation."
+    },
+    {
+      "id": "TC-007",
+      "requirement_ids": [
+        "REQ-008"
+      ],
+      "title": "Inject invalid boom-angle input around 200 ms boundary",
+      "type": "Fault-injection / Boundary",
+      "priority": "High",
+      "preconditions": "A test method exists to force boom-angle validity state.",
+      "steps": [
+        "Repeat the invalidity-duration boundary sequence for boom-angle input.",
+        "Verify sensor-fault indication.",
+        "Verify lift-inhibit relay activation beyond the specified duration."
+      ],
+      "expected_result": "Boom-angle invalidity invokes the same required fail-safe outputs at the agreed timing boundary."
+    },
+    {
+      "id": "TC-008",
+      "requirement_ids": [
+        "REQ-009",
+        "REQ-010"
+      ],
+      "title": "Regression test existing warning and lift-inhibit functions",
+      "type": "Regression",
+      "priority": "High",
+      "preconditions": "Approved baseline behavior/test evidence is available.",
+      "steps": [
+        "Execute baseline warning tests not superseded by ECN-042.",
+        "Execute baseline 100% SWL lift-inhibit tests.",
+        "Confirm sensor and relay hardware remain unchanged.",
+        "Compare results with approved baseline expectations."
+      ],
+      "expected_result": "Unaffected baseline warning/inhibit behavior remains unchanged and excluded hardware is not modified."
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "impacted_areas": [
+        "Firmware",
+        "HMI",
+        "Verification"
+      ],
+      "risk_ids": [],
+      "test_case_ids": [
+        "TC-001"
+      ]
+    },
+    {
+      "requirement_id": "REQ-002",
+      "impacted_areas": [
+        "Firmware",
+        "HMI",
+        "Verification"
+      ],
+      "risk_ids": [],
+      "test_case_ids": [
+        "TC-001"
+      ]
+    },
+    {
+      "requirement_id": "REQ-003",
+      "impacted_areas": [
+        "Firmware",
+        "Verification"
+      ],
+      "risk_ids": [
+        "RISK-005"
+      ],
+      "test_case_ids": [
+        "TC-002"
+      ]
+    },
+    {
+      "requirement_id": "REQ-004",
+      "impacted_areas": [
+        "Firmware",
+        "Verification"
+      ],
+      "risk_ids": [
+        "RISK-001",
+        "RISK-004"
+      ],
+      "test_case_ids": [
+        "TC-003",
+        "TC-004"
+      ]
+    },
+    {
+      "requirement_id": "REQ-005",
+      "impacted_areas": [
+        "Firmware",
+        "Verification"
+      ],
+      "risk_ids": [
+        "RISK-004"
+      ],
+      "test_case_ids": [
+        "TC-003"
+      ]
+    },
+    {
+      "requirement_id": "REQ-006",
+      "impacted_areas": [
+        "Firmware",
+        "Hardware",
+        "Verification"
+      ],
+      "risk_ids": [
+        "RISK-001",
+        "RISK-004"
+      ],
+      "test_case_ids": [
+        "TC-004"
+      ]
+    },
+    {
+      "requirement_id": "REQ-007",
+      "impacted_areas": [
+        "Communication",
+        "Firmware",
+        "Verification"
+      ],
+      "risk_ids": [
+        "RISK-002"
+      ],
+      "test_case_ids": [
+        "TC-005"
+      ]
+    },
+    {
+      "requirement_id": "REQ-008",
+      "impacted_areas": [
+        "Firmware",
+        "HMI",
+        "Verification"
+      ],
+      "risk_ids": [
+        "RISK-003"
+      ],
+      "test_case_ids": [
+        "TC-006",
+        "TC-007"
+      ]
+    },
+    {
+      "requirement_id": "REQ-009",
+      "impacted_areas": [
+        "Hardware",
+        "Verification"
+      ],
+      "risk_ids": [],
+      "test_case_ids": [
+        "TC-008"
+      ]
+    },
+    {
+      "requirement_id": "REQ-010",
+      "impacted_areas": [
+        "Firmware",
+        "Verification"
+      ],
+      "risk_ids": [
+        "RISK-005"
+      ],
+      "test_case_ids": [
+        "TC-008"
+      ]
+    }
+  ],
+  "action_items": [
+    {
+      "action": "Define overload-event start/end and duplicate suppression semantics.",
+      "owner_role": "Systems Engineer / Product Owner",
+      "priority": "High",
+      "due_trigger": "Before firmware design freeze"
+    },
+    {
+      "action": "Provide CAN payload mapping, scaling, byte order, and retry expectations for ID 0x18FF50E5.",
+      "owner_role": "Customer / Interface Owner",
+      "priority": "High",
+      "due_trigger": "Before CAN implementation"
+    },
+    {
+      "action": "Define timestamp source, resolution, rollover, and behavior when time is invalid.",
+      "owner_role": "Systems Engineer",
+      "priority": "High",
+      "due_trigger": "Before event-record schema freeze"
+    },
+    {
+      "action": "Define storage-full policy and confirm memory/endurance budget.",
+      "owner_role": "Firmware + Hardware Engineer",
+      "priority": "High",
+      "due_trigger": "Before NVM implementation"
+    },
+    {
+      "action": "Define invalid-sensor detection criteria and recovery/latching behavior.",
+      "owner_role": "Systems / Safety Engineer",
+      "priority": "High",
+      "due_trigger": "Before fault-handling implementation"
+    },
+    {
+      "action": "Identify approved baseline regression tests for existing warning/inhibit behavior.",
+      "owner_role": "Verification Lead",
+      "priority": "Medium",
+      "due_trigger": "Before release verification"
+    }
+  ],
+  "clarification_questions": [
+    "What user/interface mechanism configures the pre-warning threshold, what is the step size, and must the value persist across power cycles?",
+    "At exactly threshold minus 5 percentage points, should the pre-warning clear or remain active?",
+    "What defines one overload event: threshold crossing, a continuous above-100% episode, or every sampling instant?",
+    "When 10,000 records are stored, should the controller stop logging, overwrite oldest records, raise a diagnostic, or use another policy?",
+    "What is the CAN payload byte mapping, scaling, byte order, DLC, transmission/retry policy, and receiver expectation?",
+    "What timestamp source and resolution are required, and what should happen if valid time is unavailable?",
+    "What conditions make load or boom-angle input 'invalid', and should the fault/lift inhibit latch or auto-recover?",
+    "What approved baseline specification/test set defines the existing warning and inhibit behavior that must not regress?"
+  ],
+  "confidence_notes": [
+    "The source is sufficient to identify major functional changes but not sufficient for final implementation approval.",
+    "Several impacts are explicitly marked Inferred because the ECN specifies behavior but not architecture.",
+    "No external safety standard or compliance claim has been added because none was provided in the source."
+  ]
+}

@@ -1,0 +1,25 @@
+ENGINEERING CHANGE REQUEST — ECN-042
+Product: Crane Safe Load Indicator Controller
+Requested by: Customer engineering team
+Target release: 6 weeks
+
+CURRENT BEHAVIOR
+1. The controller provides a warning alarm when calculated load reaches 90% of Safe Working Load (SWL).
+2. The controller activates the existing lift-inhibit relay when calculated load reaches 100% SWL.
+3. Load, boom angle, and operating radius are already available to the controller.
+4. The product has a CAN interface and internal non-volatile storage.
+
+REQUESTED CHANGE
+A. Add a configurable pre-warning threshold. The allowed setting shall be 80% to 90% of SWL, with 85% as the default.
+B. Once pre-warning activates, it shall remain active until the calculated load falls at least 5 percentage points below the configured pre-warning threshold.
+C. Log every event in which calculated load reaches or exceeds 100% SWL. Each event record shall contain timestamp, calculated load, boom angle, and operating radius.
+D. Internal storage shall retain at least 10,000 overload-event records.
+E. The latest overload event shall be transmitted on the existing CAN interface using CAN identifier 0x18FF50E5 within 500 ms of the event being detected.
+F. If either the load input or boom-angle input is invalid continuously for more than 200 ms, the controller shall display a sensor-fault indication and activate the existing lift-inhibit relay.
+G. No change is requested to the load sensor, angle sensor, or lift-inhibit relay hardware.
+H. Existing warning and inhibit behavior not modified by this ECN shall continue to work.
+
+OPEN ITEMS
+- The customer has not specified what should happen when the 10,000-event storage capacity is full.
+- CAN payload byte mapping for the new overload-event message has not been provided.
+- Timestamp source and required timestamp resolution are not specified.
